@@ -1,113 +1,135 @@
-/**
- * Public submission gateway for the Newton County healthcare needs assessment.
- * Only this server function writes records. Requires ALLOWED_ORIGINS and the
- * original schema plus NEWTON_RATE_LIMITS.sql. No outside CAPTCHA account required.
- * This includes basic abuse controls but is NOT fully bot-proof.
- */
-import { createClient } from 'npm:@supabase/supabase-js@2';
-
-const allowedOrigins = (Deno.env.get('ALLOWED_ORIGINS') || '')
-  .split(',').map(v => v.trim()).filter(Boolean);
-const url = Deno.env.get('SUPABASE_URL') || '';
-// New Supabase projects inject a JSON map of secret keys. Older projects also support the legacy service-role key.
-const keyMap = (() => { try { return JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') || '{}'); } catch { return {}; } })();
-const serverKey = keyMap.default || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
-
-function respond(data: object, status: number, origin = '') {
-  const headers: Record<string,string> = { 'Content-Type':'application/json', 'Cache-Control':'no-store', 'Vary':'Origin' };
-  if (allowedOrigins.includes(origin)) {
-    headers['Access-Control-Allow-Origin']=origin;
-    headers['Access-Control-Allow-Methods']='POST, OPTIONS';
-    headers['Access-Control-Allow-Headers']='Content-Type';
-  }
-  return new Response(JSON.stringify(data), {status,headers});
-}
-
-const sets = {
-  age_group: ['under18','18-24','25-34','35-44','45-54','55-64','65-74','75+','prefer_not'],
-  gender: ['woman','man','nonbinary','other','prefer_not'],
-  audience: ['self','children','caregiver'],
-  services: ['primary','prevention','pediatric','vaccines','blood_pressure','diabetes','heart_stroke','stroke_rehab','women','pregnancy','menopause','mental','substance','chronic','rehab','dental','vision','other'],
-  specialists: ['cardiology','neurology','endocrinology','obgyn','dermatology','psychiatry','orthopedics','urology','pulmonology','gastro','nephrology','rheumatology','pain','pediatric_specialty','other'],
-  barriers: ['distance','transport','cost','no_insurance','insurance_limit','appointments','specialists','hours','meds','childcare','mobility','language','internet','none','other'],
-  care_location: ['','none','newton','jasper','beaumont','louisiana','elsewhere','prefer_not'],
-  travel_time: ['','0-15','16-30','31-60','over60','unknown'],
-  delayed_care: ['','yes','no','unsure','prefer_not'],
-  ideal_features: ['evenings','weekends','same_day','walkin','telehealth','lab','xray','ultrasound','pharmacy','counseling','therapy','dental','vision','affordability','transport_help','other'],
-  telehealth_comfort: ['','yes','maybe','no','unsure'],
-  priorities: ['primary','pediatric','specialists','mental','prevention','chronic','women','rehab','lab','imaging','pharmacy','after_hours','cost','transport','dentalvision','other'],
-  source: ['','facebook','community','tan_staff','senior','partner','friend','other']
-} as const;
-function choice(value: unknown, choices: readonly string[]) { return typeof value==='string' && choices.includes(value); }
-function string(value: unknown, max=160) { return typeof value==='string' && value.length<=max; }
-function selections(value: unknown, choices: readonly string[], max=60) {
-  return Array.isArray(value) && value.length<=max && new Set(value).size===value.length && value.every(v=>choice(v,choices));
-}
-function clean(obj: Record<string,unknown>) {
-  if (!/^\d{5}$/.test(String(obj.zip_code || ''))) return null;
-  if (!choice(obj.age_group, sets.age_group)||!choice(obj.gender,sets.gender)) return null;
-  if (!selections(obj.audience,sets.audience,3)||(obj.audience as unknown[]).length<1)return null;
-  for(const k of ['services','specialists','barriers','ideal_features','priorities'] as const) {
-    if(!selections(obj[k],sets[k])) return null;
-  }
-  if ((obj.priorities as unknown[]).length<1 || (obj.priorities as unknown[]).length>3)return null;
-  if ((obj.barriers as string[]).includes('none') && (obj.barriers as string[]).length>1)return null;
-  for(const k of ['care_location','travel_time','delayed_care','telehealth_comfort','source'] as const){
-    if(!choice(obj[k], sets[k]))return null;
-  }
-  for(const k of ['services_other','specialists_other','barriers_other','ideal_other','priorities_other'] as const){if(!string(obj[k],160))return null;}
-  if (!string(obj.comments,750)||typeof obj.staff_assisted!=='boolean')return null;
-  return {
-    zip_code:obj.zip_code,age_group:obj.age_group,gender:obj.gender,audience:obj.audience,
-    services:obj.services,services_other:obj.services_other,specialists:obj.specialists,
-    specialists_other:obj.specialists_other,barriers:obj.barriers,barriers_other:obj.barriers_other,
-    care_location:obj.care_location,travel_time:obj.travel_time,delayed_care:obj.delayed_care,
-    ideal_features:obj.ideal_features,ideal_other:obj.ideal_other,
-    telehealth_comfort:obj.telehealth_comfort,priorities:obj.priorities,
-    priorities_other:obj.priorities_other,comments:obj.comments,source:obj.source,staff_assisted:obj.staff_assisted
+/* TAN Healthcare • Newton County Community Healthcare Needs Assessment
+   No answers are stored in browser storage. Data is sent only to a configured secure endpoint.
+*/
+(() => {
+  'use strict';
+  const config = window.TAN_SURVEY_CONFIG || {};
+  const live = Boolean(config.surveyEndpoint);
+  const steps = ['about','needs','specialists','barriers','ideal','priorities','final','review'];
+  const options = {
+    audience:[['self','Myself','A mí'],['children','My child or children','Mis hijos'],['caregiver','Someone I care for','Alguien a quien cuido']],
+    ages:[['18-24','18–24','18–24'],['25-34','25–34','25–34'],['35-44','35–44','35–44'],['45-54','45–54','45–54'],['55-64','55–64','55–64'],['65-74','65–74','65–74'],['75+','75 or older','75 años o más'],['under18','Under 18','Menor de 18'],['prefer_not','Prefer not to answer','Prefiero no responder']],
+    genders:[['woman','Woman','Mujer'],['man','Man','Hombre'],['nonbinary','Nonbinary','No binario'],['other','Another gender','Otro género'],['prefer_not','Prefer not to answer','Prefiero no responder']],
+    services:[['primary','Routine primary care / sick visits','Atención primaria / consultas por enfermedad'],['prevention','Annual checkups and screenings','Chequeos anuales y pruebas preventivas'],['pediatric','Care for babies, children, and teens','Atención para bebés, niños y adolescentes'],['vaccines','Immunizations','Vacunas'],['blood_pressure','High blood pressure management','Control de la presión arterial alta'],['diabetes','Diabetes care','Atención para la diabetes'],['heart_stroke','Heart health and stroke prevention','Salud cardíaca y prevención de derrames cerebrales'],['stroke_rehab','Stroke recovery and rehabilitation','Recuperación y rehabilitación tras un derrame cerebral'],['women','Women’s and reproductive health','Salud de la mujer y reproductiva'],['pregnancy','Prenatal and postpartum care','Atención prenatal y posparto'],['menopause','Menopause care','Atención para la menopausia'],['mental','Mental health counseling','Consejería de salud mental'],['substance','Substance use and recovery support','Apoyo para uso de sustancias y recuperación'],['chronic','Long-term condition management','Control de enfermedades crónicas'],['rehab','Physical, occupational, or speech therapy','Terapia física, ocupacional o del habla'],['dental','Dental care','Atención dental'],['vision','Eye exams and vision care','Exámenes de la vista y atención visual'],['other','Something else','Otro servicio']],
+    specialists:[['cardiology','Cardiology (heart)','Cardiología (corazón)'],['neurology','Neurology (brain / nerves)','Neurología (cerebro / nervios)'],['endocrinology','Endocrinology (diabetes / hormones)','Endocrinología (diabetes / hormonas)'],['obgyn','OB-GYN / women’s health','Ginecología y obstetricia'],['dermatology','Dermatology (skin)','Dermatología (piel)'],['psychiatry','Psychiatry (mental health medication)','Psiquiatría (medicación para salud mental)'],['orthopedics','Orthopedics (bones / joints)','Ortopedia (huesos / articulaciones)'],['urology','Urology (urinary health)','Urología (salud urinaria)'],['pulmonology','Pulmonology (lungs)','Neumología (pulmones)'],['gastro','Gastroenterology (digestive health)','Gastroenterología (salud digestiva)'],['nephrology','Nephrology (kidneys)','Nefrología (riñones)'],['rheumatology','Rheumatology (arthritis / immune conditions)','Reumatología (artritis / sistema inmunitario)'],['pain','Pain management','Manejo del dolor'],['pediatric_specialty','Pediatric specialists','Especialistas pediátricos'],['other','Another specialty','Otra especialidad']],
+    barriers:[['distance','Healthcare is too far away','La atención médica queda muy lejos'],['transport','I lack reliable transportation','No tengo transporte confiable'],['cost','Visits and tests cost too much','Las consultas y pruebas cuestan demasiado'],['no_insurance','I do not have insurance','No tengo seguro médico'],['insurance_limit','My insurance is not accepted / costs too much','No aceptan mi seguro / mi seguro cuesta demasiado'],['appointments','Appointments are hard to get','Es difícil conseguir citas'],['specialists','I cannot find nearby specialists','No encuentro especialistas cerca'],['hours','Offices are closed when I am available','Los consultorios cierran cuando estoy disponible'],['meds','Prescriptions are hard to get or afford','Es difícil obtener o pagar medicamentos'],['childcare','I lack childcare or caregiving support','No tengo cuidado infantil o apoyo para cuidadores'],['mobility','Buildings or services are not accessible to me','Los edificios o servicios no son accesibles para mí'],['language','Language or communication barriers','Barreras de idioma o comunicación'],['internet','Limited internet or technology access','Acceso limitado a internet o tecnología'],['none','I do not currently face barriers','Actualmente no enfrento dificultades'],['other','Another barrier','Otra dificultad']],
+    care_location:[['none','I do not have a usual place for care','No tengo un lugar habitual de atención'],['newton','In Newton County','En el condado de Newton'],['jasper','Jasper or Jasper County','Jasper o condado de Jasper'],['beaumont','Beaumont area','Área de Beaumont'],['louisiana','Louisiana','Luisiana'],['elsewhere','Somewhere else','Otro lugar'],['prefer_not','Prefer not to answer','Prefiero no responder']],
+    travel:[['0-15','15 minutes or less','15 minutos o menos'],['16-30','16–30 minutes','16–30 minutos'],['31-60','31–60 minutes','31–60 minutos'],['over60','More than an hour','Más de una hora'],['unknown','Not sure / no usual care','No sé / sin atención habitual']],
+    delayed:[['yes','Yes','Sí'],['no','No','No'],['unsure','Not sure','No sé'],['prefer_not','Prefer not to answer','Prefiero no responder']],
+    ideal:[['evenings','Evening appointments','Citas por la tarde/noche'],['weekends','Weekend appointments','Citas los fines de semana'],['same_day','Same-day appointments','Citas el mismo día'],['walkin','Walk-in sick visits','Consultas por enfermedad sin cita'],['telehealth','Specialist visits by video with on-site staff help','Consultas con especialistas por video con ayuda presencial'],['lab','On-site laboratory testing','Pruebas de laboratorio en el lugar'],['xray','On-site X-rays','Radiografías en el lugar'],['ultrasound','On-site ultrasound','Ecografías en el lugar'],['pharmacy','Help filling prescriptions locally','Ayuda para surtir recetas localmente'],['counseling','Counseling and behavioral health','Consejería y salud conductual'],['therapy','Rehabilitation / therapy services','Servicios de rehabilitación / terapia'],['dental','Dental visits','Consultas dentales'],['vision','Vision services','Servicios de la vista'],['affordability','Help finding affordable care / insurance','Ayuda para encontrar atención / seguro asequible'],['transport_help','Transportation assistance','Ayuda de transporte'],['other','Something else','Algo más']],
+    telehealth:[['yes','Yes, if a healthcare professional helps in person','Sí, si un profesional de salud ayuda en persona'],['maybe','Maybe; I would like to learn more','Tal vez; quisiera saber más'],['no','No, I prefer in-person specialists','No, prefiero especialistas en persona'],['unsure','Not sure','No sé']],
+    priorities:[['primary','Primary care close to home','Atención primaria cerca de casa'],['pediatric','Children’s healthcare','Atención médica para niños'],['specialists','Access to specialists','Acceso a especialistas'],['mental','Mental and behavioral health','Salud mental y conductual'],['prevention','Preventive screenings and vaccinations','Pruebas preventivas y vacunas'],['chronic','Chronic disease management','Control de enfermedades crónicas'],['women','Women’s and pregnancy care','Salud de la mujer y embarazo'],['rehab','Stroke recovery and rehabilitation','Recuperación tras derrame cerebral y rehabilitación'],['lab','Lab tests and diagnostics','Laboratorio y pruebas diagnósticas'],['imaging','X-rays and imaging','Radiografías y estudios de imagen'],['pharmacy','Local prescription access','Acceso local a medicamentos'],['after_hours','Evenings / weekends / same-day visits','Tardes / fines de semana / citas el mismo día'],['cost','Affordable care regardless of insurance','Atención asequible con o sin seguro'],['transport','Transportation and accessibility','Transporte y accesibilidad'],['dentalvision','Dental and vision care','Atención dental y de la vista'],['other','Another priority','Otra prioridad']],
+    sources:[['facebook','Facebook / social media','Facebook / redes sociales'],['community','Community meeting or event','Reunión o evento comunitario'],['tan_staff','TAN Healthcare staff','Personal de TAN Healthcare'],['senior','Senior center','Centro para adultos mayores'],['partner','Community organization','Organización comunitaria'],['friend','Friend or family member','Amigo o familiar'],['other','Other','Otro']],
+    assistance:[['no','I am completing this on my own','Estoy completándola por mi cuenta'],['yes','A staff member / volunteer is helping me','Me ayuda personal / un voluntario']]
   };
-}
-function cleanContact(value: unknown) {
-  if(value==null)return null;
-  if(typeof value!=='object'||Array.isArray(value))return false;
-  const c=value as Record<string,unknown>;
-  if(c.consent!==true||!string(c.name,100)||!string(c.phone,35)||!string(c.email,160))return false;
-  const phone=(c.phone as string).replace(/\D/g,'');
-  const validEmail=/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.email as string);
-  if(!validEmail && phone.length<10)return false;
-  return {name:c.name,phone:c.phone,email:c.email};
-}
-
-Deno.serve(async (req) => {
-  const origin=req.headers.get('Origin')||'';
-  if(!allowedOrigins.includes(origin))return respond({error:'Origin not allowed'},403);
-  if(req.method==='OPTIONS')return new Response(null,{status:204,headers:{
-    'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Methods':'POST, OPTIONS',
-    'Access-Control-Allow-Headers':'Content-Type','Vary':'Origin','Cache-Control':'no-store'
-  }});
-  if(req.method!=='POST')return respond({error:'Method not allowed'},405,origin);
-  if(!url||!serverKey)return respond({error:'Not configured'},503,origin);
-  if(!(req.headers.get('Content-Type')||'').startsWith('application/json'))return respond({error:'Expected JSON'},415,origin);
-  if(Number(req.headers.get('Content-Length')||0)>20000)return respond({error:'Payload too large'},413,origin);
-  try {
-    const raw=await req.text();if(raw.length>20000)return respond({error:'Payload too large'},413,origin);
-    const body=JSON.parse(raw);
-    if(!body||typeof body!=='object'||Array.isArray(body)||body.honey)return respond({error:'Invalid submission'},400,origin);
-    const record=clean(body);
-    const contact=cleanContact(body.contact);
-    if(!record||contact===false)return respond({error:'Please review your answers'},400,origin);
-    // Hash a short-lived network identifier for basic rate limits. Never store raw IPs.
-    // Network proxies can mask or alter this value, so this is not foolproof bot prevention.
-    const ip = (req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for')?.split(',')[0] || req.headers.get('x-real-ip') || 'unknown').trim().slice(0,90);
-    const day = new Date().toISOString().slice(0,10);
-    const bytes = new TextEncoder().encode(day + ':' + ip);
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
-    const fingerprint = Array.from(digest,b=>b.toString(16).padStart(2,'0')).join('');
-    const db=createClient(url,serverKey,{auth:{persistSession:false,autoRefreshToken:false}});
-    const {data:status,error}=await db.rpc('store_newton_survey_throttled',{p_response:record,p_contact:contact,p_fingerprint:fingerprint});
-    if(error){console.error('Newton survey database write failed',error.code);return respond({error:'Unable to save'},503,origin);}
-    if(status==='limited')return respond({error:'Please try again later'},429,origin);
-    if(status!=='ok')return respond({error:'Unable to save'},503,origin);
-    return respond({ok:true},201,origin);
-  }catch(e){console.error('Survey request failed',e instanceof Error?e.name:'error');return respond({error:'Unable to process submission'},400,origin);}
-});
+  const T = {
+    en: {
+      headerOne:'Newton County Community',headerTwo:'Healthcare Needs Assessment',intro:'Help shape future healthcare in Newton County.',introDesc:'Tell us what healthcare you and your community need most. Your input will help guide conversations about potential outpatient services.',duration:'About 5–7 minutes',durationDesc:'Name and contact details are optional.',sideE:'YOUR VOICE MATTERS',sideT:'Your community. Your clinic.',sideD:'Choose as many answers as you need. There are no right or wrong answers.',sideNote:'This is a planning survey, not a request for medical care. No services are guaranteed or currently offered through this survey.',preview:'PREVIEW MODE: Nothing you enter is sent or saved. Secure data collection must be configured before this survey can go live.',setup:'Setup incomplete. This page is in preview mode.',back:'Back',continue:'Continue',review:'Review my answers',submit:'Submit survey',previewSubmit:'Finish preview (do not submit)',next:'Next',optional:'Optional',select:'Please select',other:'Please tell us more (optional)',step:'Step',of:'of',required:'Required',chooseAll:'Select all that apply.',none:'No selections',notProvided:'Not provided',yes:'Yes',no:'No',zipError:'Please enter a valid five-digit ZIP code.',ageError:'Please choose an age group.',genderError:'Please choose a gender response (you may choose “Prefer not to answer”).',audienceError:'Please choose who you are answering for.',priorityError:'Please choose at least one priority (up to three).',contactError:'Please provide a valid email address or phone number if you want to be contacted.',consentError:'Please check the permission box to request contact, or leave the contact fields blank.',captchaError:'Please complete the security check before submitting.',submitError:'We could not submit your survey. Your answers are still on this page. Please try again later.',thanks:'Thank you for sharing your voice!',thanksBody:'Your response has been recorded. Your feedback will help inform discussions about potential healthcare services in Newton County.',previewThanks:'Preview finished! No answers were saved or sent. The survey will need secure data collection set up before it can accept public responses.',restart:'Start another response',safety:'Please do not include medical records, Social Security numbers, or other sensitive information in your comments. This form is not for emergencies or appointment requests.',section1:'ABOUT YOU',title1:'Tell us a little about you.',desc1:'We use these answers to understand whose healthcare priorities we are hearing. You can skip sharing your name entirely.',zip:'ZIP code',age:'Age group',gender:'Gender',audience:'Who are you answering for?',audienceNote:'You can answer for yourself, your children, and/or someone you help care for.',section2:'WHAT YOU NEED',title2:'What healthcare do you and your family need?',desc2:'Think about routine care, ongoing conditions, prevention, and services that would make a difference. Choose every service that matters to you.',servicesLabel:'Healthcare services',section3:'SPECIALISTS',title3:'Which specialists would you like to see closer to home?',desc3:'These are examples of outpatient specialty care that might be delivered in person or with supported telehealth. Selecting one does not mean it has been approved.',specialistsLabel:'Types of specialists',section4:'CURRENT CHALLENGES',title4:'What gets in the way of getting care?',desc4:'Tell us about real experiences in getting healthcare today, even if you get care outside Newton County.',barriersLabel:'Barriers to healthcare',careLocation:'Where do you usually get healthcare?',travel:'About how long do you travel one way for a typical appointment?',delayed:'In the past year, have you delayed or skipped healthcare because of cost, travel, or access?',section5:'DESIGN YOUR CLINIC',title5:'Imagine your ideal community clinic.',desc5:'If you could help design convenient outpatient healthcare in Newton County, what would you want included? These are ideas for discussion, not a list of promised services.',idealLabel:'Services and conveniences you would like',telehealth:'Would you consider seeing a specialist by video from a local clinic?',section6:'TOP PRIORITIES',title6:'What should come first?',desc6:'You have the big picture. Now choose up to THREE things that matter most to you and your community.',priorityLabel:'My top priorities',priorityCounter:'selected (maximum 3)',section7:'YOUR VOICE',title7:'Anything else we should know?',desc7:'Almost done! Tell us what we missed. You may optionally leave contact details if you want someone to follow up.',comments:'What would you like TAN Healthcare and its partners to understand about healthcare in Newton County?',commentsPh:'Share ideas or experiences without including private medical details…',source:'How did you hear about this survey?',assistance:'How are you completing this survey?',contactTitle:'Would you like to stay in touch?',contactDesc:'Completely optional. Only enter contact information if you want TAN Healthcare to contact you about this project. These details are stored separately from survey responses.',name:'Name',phone:'Phone',email:'Email',consent:'I give TAN Healthcare permission to use the contact information I provided to communicate with me about the Newton County healthcare project.',privacy:'Please do not share a diagnosis, medical record number, or other sensitive personal details. Information from this survey will be used for community planning; providing contact details is voluntary.',reviewTitle:'Ready to finish?',reviewDesc:'Review your answers below. Use Back to make changes before you submit.',reviewContact:'Contact request',reviewMessage:'Your responses are about community needs, not a medical appointment or medical advice.',sending:'Submitting…',tryAgain:'Try again',maxChars:'characters remaining',labelAbout:'About you',labelServices:'Healthcare needs',labelSpecialists:'Specialists',labelBarriers:'Barriers',labelIdeal:'Ideal clinic',labelPriority:'Top priorities',labelComment:'Additional comments',labelContact:'Optional contact',noContact:'No follow-up requested'
+    },
+    es: {
+      headerOne:'Comunidad del condado de Newton',headerTwo:'Evaluación de necesidades de salud',intro:'Ayude a dar forma a la atención médica futura en el condado de Newton.',introDesc:'Díganos qué atención médica necesita más su comunidad. Su opinión ayudará a orientar las conversaciones sobre posibles servicios ambulatorios.',duration:'Aproximadamente 5–7 minutos',durationDesc:'Nombre y datos de contacto opcionales.',sideE:'SU OPINIÓN IMPORTA',sideT:'Su comunidad. Su clínica.',sideD:'Seleccione todas las respuestas necesarias. No hay respuestas correctas ni incorrectas.',sideNote:'Esta es una encuesta de planificación, no una solicitud de atención médica. No se garantizan ni se ofrecen servicios a través de esta encuesta.',preview:'MODO DE PRUEBA: No se envía ni guarda ninguna respuesta. Es necesario configurar el almacenamiento seguro para publicar la encuesta.',setup:'Configuración incompleta. Modo de prueba.',back:'Atrás',continue:'Continuar',review:'Revisar mis respuestas',submit:'Enviar encuesta',previewSubmit:'Terminar la prueba (sin enviar)',next:'Siguiente',optional:'Opcional',select:'Seleccione',other:'Cuéntenos más (opcional)',step:'Paso',of:'de',required:'Obligatorio',chooseAll:'Seleccione todas las que correspondan.',none:'Sin selecciones',notProvided:'No se proporcionó',yes:'Sí',no:'No',zipError:'Ingrese un código postal válido de cinco dígitos.',ageError:'Seleccione un grupo de edad.',genderError:'Seleccione una respuesta de género (puede elegir «Prefiero no responder»).',audienceError:'Seleccione para quién está respondiendo.',priorityError:'Seleccione al menos una prioridad (hasta tres).',contactError:'Si desea que le contactemos, proporcione un correo o teléfono válido.',consentError:'Marque la casilla de autorización para solicitar contacto o deje los campos de contacto vacíos.',captchaError:'Complete la verificación de seguridad antes de enviar.',submitError:'No pudimos enviar su encuesta. Sus respuestas siguen en esta página. Inténtelo de nuevo más tarde.',thanks:'¡Gracias por compartir su opinión!',thanksBody:'Hemos registrado su respuesta. Sus comentarios ayudarán a orientar las conversaciones sobre posibles servicios de salud en el condado de Newton.',previewThanks:'¡Prueba finalizada! No se guardó ni envió ninguna respuesta. Antes de publicarla, debe configurarse la recopilación segura de datos.',restart:'Iniciar otra respuesta',safety:'No incluya expedientes médicos, números de Seguro Social ni otra información confidencial. Este formulario no es para emergencias ni para solicitar citas.',section1:'SOBRE USTED',title1:'Cuéntenos un poco sobre usted.',desc1:'Estos datos nos ayudan a conocer las prioridades de atención médica de la comunidad. No necesita compartir su nombre.',zip:'Código postal',age:'Grupo de edad',gender:'Género',audience:'¿Por quién responde?',audienceNote:'Puede responder por usted, sus hijos y/o alguien a quien ayuda a cuidar.',section2:'LO QUE NECESITA',title2:'¿Qué atención médica necesitan usted y su familia?',desc2:'Piense en la atención rutinaria, enfermedades crónicas y prevención. Seleccione todos los servicios que le importen.',servicesLabel:'Servicios de salud',section3:'ESPECIALISTAS',title3:'¿Qué especialistas le gustaría tener más cerca?',desc3:'Estos son ejemplos de atención ambulatoria, presencial o por telesalud con apoyo. Elegir uno no significa que esté aprobado.',specialistsLabel:'Tipos de especialistas',section4:'DESAFÍOS ACTUALES',title4:'¿Qué le dificulta recibir atención médica?',desc4:'Cuéntenos sus experiencias actuales, aunque reciba atención fuera del condado de Newton.',barriersLabel:'Barreras de acceso',careLocation:'¿Dónde recibe atención médica habitualmente?',travel:'¿Cuánto tarda, aproximadamente, en llegar a una cita habitual (solo ida)?',delayed:'En el último año, ¿ha pospuesto u omitido atención por costo, transporte o acceso?',section5:'DISEÑE SU CLÍNICA',title5:'Imagine su clínica comunitaria ideal.',desc5:'Si pudiera ayudar a diseñar la atención médica ambulatoria en el condado de Newton, ¿qué incluiría? Son ideas para conversar, no servicios prometidos.',idealLabel:'Servicios y facilidades que le gustaría tener',telehealth:'¿Consideraría una consulta por video con un especialista desde una clínica local?',section6:'PRIORIDADES PRINCIPALES',title6:'¿Qué debería venir primero?',desc6:'Ya tiene el panorama completo. Ahora elija hasta TRES prioridades para usted y su comunidad.',priorityLabel:'Mis principales prioridades',priorityCounter:'seleccionadas (máximo 3)',section7:'SU OPINIÓN',title7:'¿Algo más que debamos saber?',desc7:'¡Casi termina! Cuéntenos lo que faltó. Puede dejar sus datos de contacto si quiere que le respondamos.',comments:'¿Qué deberían comprender TAN Healthcare y sus colaboradores sobre la atención médica en el condado de Newton?',commentsPh:'Comparta ideas o experiencias sin detalles médicos privados…',source:'¿Cómo supo de esta encuesta?',assistance:'¿Cómo está completando esta encuesta?',contactTitle:'¿Desea mantenerse en contacto?',contactDesc:'Totalmente opcional. Comparta sus datos solo si desea que TAN Healthcare le contacte sobre este proyecto. Se guardarán aparte de las respuestas.',name:'Nombre',phone:'Teléfono',email:'Correo electrónico',consent:'Doy permiso a TAN Healthcare para usar mis datos de contacto y comunicarse conmigo sobre el proyecto de salud en el condado de Newton.',privacy:'No comparta diagnósticos, números de expediente ni otros datos personales delicados. La información se usará para planificación comunitaria; proporcionar contacto es voluntario.',reviewTitle:'¿Listo para terminar?',reviewDesc:'Revise sus respuestas. Use Atrás para cambiar algo antes de enviarlas.',reviewContact:'Solicitud de contacto',reviewMessage:'Sus respuestas describen necesidades comunitarias, no una cita ni consejo médico.',sending:'Enviando…',tryAgain:'Intentar de nuevo',maxChars:'caracteres restantes',labelAbout:'Sobre usted',labelServices:'Necesidades de atención',labelSpecialists:'Especialistas',labelBarriers:'Barreras',labelIdeal:'Clínica ideal',labelPriority:'Prioridades',labelComment:'Comentarios adicionales',labelContact:'Contacto opcional',noContact:'No solicitó seguimiento'
+    }
+  };
+  const blank = () => ({zip_code:'',age_group:'',gender:'',audience:[],services:[],services_other:'',specialists:[],specialists_other:'',barriers:[],barriers_other:'',care_location:'',travel_time:'',delayed_care:'',ideal_features:[],ideal_other:'',telehealth_comfort:'',priorities:[],priorities_other:'',comments:'',source:'',staff_assisted:'',contact_name:'',contact_phone:'',contact_email:'',contact_consent:false,honey:''});
+  let data = blank();
+  let lang='en';
+  let step=0;
+  let busy=false;
+  
+  const el=id=>document.getElementById(id);
+  const tr=key=>T[lang][key]||key;
+  const safe=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const labelFor=(group,key)=>{const found=options[group]?.find(o=>o[0]===key);return found?(lang==='en'?found[1]:found[2]):key};
+  const intro=(i)=>`<div class="step-eyebrow">${tr('section'+i)}</div><h2 class="step-heading">${tr('title'+i)}</h2><p class="step-description">${tr('desc'+i)}</p>`;
+  const label=(key,required=false)=>`${tr(key)}${required?'<span class="required" aria-label="required"> *</span>':''}`;
+  const textField=(key,field,required=false,type='text',max=100,placeholder='')=>`<div class="field"><label for="${field}">${label(key,required)}</label><input id="${field}" name="${field}" data-field="${field}" type="${type}" value="${safe(data[field])}" maxlength="${max}" ${placeholder?`placeholder="${safe(placeholder)}"`:''} ${required?'aria-required="true"':''} autocomplete="off"></div>`;
+  const selectField=(labelKey,field,group,required=false)=>`<div class="field"><label for="${field}">${label(labelKey,required)}</label><select id="${field}" data-field="${field}" ${required?'aria-required="true"':''}><option value="">${safe(tr('select'))}…</option>${options[group].map(([key])=>`<option value="${key}" ${data[field]===key?'selected':''}>${safe(labelFor(group,key))}</option>`).join('')}</select></div>`;
+  const choiceGroup=(group,field,type='checkbox',max=0)=>`<div class="choices" role="group" aria-label="${safe(group==='services'?tr('servicesLabel'):group==='specialists'?tr('specialistsLabel'):group==='barriers'?tr('barriersLabel'):group==='ideal'?tr('idealLabel'):group==='priorities'?tr('priorityLabel'):group==='audience'?tr('audience'):group)}">${options[group].map(([key])=>{
+    const checked=type==='checkbox'?data[field].includes(key):data[field]===key;
+    const disabled=type==='checkbox'&&max&&data[field].length>=max&&!checked;
+    return `<label class="choice"><input type="${type}" name="${field}" data-group="${group}" data-field="${field}" value="${key}" ${checked?'checked':''} ${disabled?'disabled':''}><span>${safe(labelFor(group,key))}</span></label>`;
+  }).join('')}</div>`;
+  const radioGroup=(group,field)=>choiceGroup(group,field,'radio');
+  const otherField=(group,field)=>data[field]?.includes('other')?`<div class="inline-field"><label for="${group}_other">${tr('other')}</label><input type="text" id="${group}_other" data-field="${group}_other" maxlength="160" value="${safe(data[group+'_other']||'')}" autocomplete="off"></div>`:'';
+  function stepHTML(){
+    if(step===0) return intro(1)+`<div class="field-row">${textField('zip','zip_code',true,'text',5,lang==='es'?'Código postal de 5 dígitos':'5-digit ZIP')}${selectField('age','age_group','ages',true)}${selectField('gender','gender','genders',true)}</div><div class="question-card"><div class="group-label">${label('audience',true)}</div><p class="group-hint">${tr('audienceNote')}</p>${choiceGroup('audience','audience')}</div>`;
+    if(step===1) return intro(2)+`<div class="group-label">${tr('servicesLabel')}</div><p class="group-hint">${tr('chooseAll')}</p>${choiceGroup('services','services')}${otherField('services','services')}`;
+    if(step===2) return intro(3)+`<div class="group-label">${tr('specialistsLabel')}</div><p class="group-hint">${tr('chooseAll')}</p>${choiceGroup('specialists','specialists')}${otherField('specialists','specialists')}`;
+    if(step===3) return intro(4)+`<div class="group-label">${tr('barriersLabel')}</div><p class="group-hint">${tr('chooseAll')}</p>${choiceGroup('barriers','barriers')}${otherField('barriers','barriers')}<div class="question-card"><div class="group-label">${tr('careLocation')}</div>${selectField('careLocation','care_location','care_location')}<div class="group-label">${tr('travel')}</div>${selectField('travel','travel_time','travel')}<div class="group-label">${tr('delayed')}</div>${radioGroup('delayed','delayed_care')}</div>`;
+    if(step===4) return intro(5)+`<div class="group-label">${tr('idealLabel')}</div><p class="group-hint">${tr('chooseAll')}</p>${choiceGroup('ideal','ideal_features')}${otherField('ideal','ideal_features')}<div class="question-card"><div class="group-label">${tr('telehealth')}</div>${radioGroup('telehealth','telehealth_comfort')}</div>`;
+    if(step===5) return intro(6)+`<div class="group-label">${tr('priorityLabel')}</div>${choiceGroup('priorities','priorities','checkbox',3)}<div id="priority-count" class="top-three-counter">${data.priorities.length} ${tr('priorityCounter')}</div>${otherField('priorities','priorities')}`;
+    if(step===6) return intro(7)+`<div class="field"><label for="comments">${tr('comments')} <span class="optional-tag">(${tr('optional')})</span></label><textarea id="comments" data-field="comments" maxlength="750" placeholder="${safe(tr('commentsPh'))}">${safe(data.comments)}</textarea><div id="comment-count" class="counter">${750-data.comments.length} ${tr('maxChars')}</div></div><p class="small-info">${tr('safety')}</p><div class="question-card"><div class="group-label">${tr('source')}</div>${radioGroup('sources','source')}<div class="group-label">${tr('assistance')}</div>${radioGroup('assistance','staff_assisted')}</div><div class="question-card"><div class="group-label">${tr('contactTitle')} <span class="optional-tag">(${tr('optional')})</span></div><p class="group-hint">${tr('contactDesc')}</p><div class="contact-fields"><div class="field-row">${textField('name','contact_name',false,'text',100)}${textField('phone','contact_phone',false,'tel',35)}${textField('email','contact_email',false,'email',160)}</div></div><label class="consent"><input type="checkbox" data-field="contact_consent" ${data.contact_consent?'checked':''}><span>${tr('consent')}</span></label></div><div class="trap" style="position:absolute;left:-99999px" aria-hidden="true"><label for="website">Website</label><input id="website" type="text" data-field="honey" tabindex="-1" autocomplete="off"></div><p class="small-info">${tr('privacy')}</p>`;
+    if(step===7){
+      const join=(field,group)=>data[field].length?data[field].map(key=>safe(labelFor(group,key))).join(' · '):safe(tr('none'));
+      const single=(field,group)=>data[field]?safe(labelFor(group,data[field])):safe(tr('notProvided'));
+      const detail=(title,body)=>`<article class="review-card"><h3>${title}</h3><p>${body}</p></article>`;
+      return `<div class="step-eyebrow">${tr('review')}</div><h2 class="step-heading">${tr('reviewTitle')}</h2><p class="step-description">${tr('reviewDesc')}</p>`+
+        detail(tr('labelAbout'),`${safe(data.zip_code)} · ${single('age_group','ages')} · ${single('gender','genders')}<br>${join('audience','audience')}`)+
+        detail(tr('labelServices'),join('services','services'))+
+        detail(tr('labelSpecialists'),join('specialists','specialists'))+
+        detail(tr('labelBarriers'),join('barriers','barriers'))+
+        detail(tr('labelIdeal'),join('ideal_features','ideal'))+
+        detail(tr('labelPriority'),join('priorities','priorities'))+
+        detail(tr('labelComment'),safe(data.comments||tr('notProvided')))+
+        detail(tr('labelContact'),[data.contact_name,data.contact_email,data.contact_phone].some(v=>v.trim())?safe(tr('yes')):safe(tr('noContact')))+
+        `<div class="callout-warning">${tr('reviewMessage')} ${tr('safety')}</div>`+
+        '';
+    }
+    return '';
+  }
+  function show(){
+    document.documentElement.lang=lang;
+    document.querySelector('.brand-title span').textContent=tr('headerOne');document.querySelector('.brand-title strong').textContent=tr('headerTwo');
+    el('hero-title').textContent=tr('intro');el('hero-desc').textContent=tr('introDesc');el('duration-label').textContent=tr('duration');el('duration-desc').textContent=tr('durationDesc');
+    el('sidebar-title').textContent=tr('sideT');el('sidebar-copy').textContent=tr('sideD');el('step-title-small').textContent=tr('sideE');el('sidebar-note').textContent=tr('sideNote');
+    el('lang-en').classList.toggle('active',lang==='en');el('lang-es').classList.toggle('active',lang==='es');el('lang-en').setAttribute('aria-pressed',String(lang==='en'));el('lang-es').setAttribute('aria-pressed',String(lang==='es'));
+    const done=Math.round((step+1)/steps.length*100);
+    el('step-indicator').textContent=`${tr('step')} ${step+1} ${tr('of')} ${steps.length}`;el('progress-percent').textContent=done+'%';el('progress-fill').style.width=done+'%';document.querySelector('.progress-track').setAttribute('aria-valuenow',String(done));
+    el('step-content').innerHTML=stepHTML();el('validation-alert').hidden=true;
+    el('back-btn').textContent=tr('back');el('back-btn').disabled=step===0||busy;
+    el('next-btn').innerHTML=(step===steps.length-1?live?tr('submit'):tr('previewSubmit'):step===steps.length-2?tr('review'):tr('continue'))+' <span aria-hidden="true">→</span>';
+    el('next-btn').disabled=busy;
+    el('mode-banner').textContent=tr('preview');el('mode-banner').hidden=live;
+    el('footer-privacy').textContent=tr('safety');
+    el('footer-help').firstChild.textContent=lang==='es'?'¿Preguntas sobre esta encuesta? Contacte a TAN Healthcare en ':'Questions about this survey? Contact TAN Healthcare at ';
+  }
+  function showError(key){const b=el('validation-alert');b.textContent=tr(key);b.hidden=false;b.scrollIntoView({behavior:'smooth',block:'center'});}
+  function validate(){
+    if(step===0){if(!/^\d{5}$/.test(data.zip_code.trim()))return 'zipError';if(!data.age_group)return 'ageError';if(!data.gender)return 'genderError';if(data.audience.length===0)return 'audienceError';}
+    if(step===5 && data.priorities.length===0)return 'priorityError';
+    if(step===6){const hasContact=[data.contact_name,data.contact_phone,data.contact_email].some(s=>s.trim());if(hasContact){const validEmail=/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.contact_email.trim());const validPhone=data.contact_phone.replace(/\D/g,'').length>=10;if(!validEmail&&!validPhone)return 'contactError';if(!data.contact_consent)return 'consentError';}}
+    return null;
+  }
+  function updatePriorityCount(){const pc=el('priority-count');if(pc)pc.textContent=`${data.priorities.length} ${tr('priorityCounter')}`;document.querySelectorAll('input[data-group="priorities"]').forEach(ch=>ch.disabled=data.priorities.length>=3&&!ch.checked);}
+  function onFieldEvent(e){const t=e.target;if(!t.matches('[data-field]'))return;const field=t.dataset.field;
+    if(t.dataset.group){const group=t.dataset.group;const val=t.value;
+      if(t.type==='checkbox'){
+        if(t.checked){if(group==='priorities'&&data[field].length>=3){t.checked=false;return;}if(!data[field].includes(val))data[field].push(val);}else data[field]=data[field].filter(s=>s!==val);
+        if(group==='barriers'&&val==='none'&&t.checked){data.barriers=['none'];show();return;}
+        if(group==='barriers'&&val!=='none'&&t.checked&&data.barriers.includes('none')){data.barriers=data.barriers.filter(s=>s!=='none');show();return;}
+        if(val==='other'){show();return;}
+        if(group==='priorities')updatePriorityCount();
+      }else data[field]=val;
+    }else if(t.type==='checkbox')data[field]=t.checked;else data[field]=t.value;
+    if(field==='comments'&&el('comment-count'))el('comment-count').textContent=`${750-data.comments.length} ${tr('maxChars')}`;
+  }
+  async function handleNext(){if(busy)return;const error=validate();if(error){showError(error);return;}
+    if(step<steps.length-1){step++;show();document.querySelector('.progress-area').scrollIntoView({behavior:'smooth',block:'start'});return;}
+    if(!live){el('success-title').textContent=tr('thanks');el('success-copy').textContent=tr('previewThanks');finish();return;}
+    const payload={zip_code:data.zip_code.trim(),age_group:data.age_group,gender:data.gender,audience:data.audience,services:data.services,services_other:data.services.includes('other')?data.services_other.trim():'',specialists:data.specialists,specialists_other:data.specialists.includes('other')?data.specialists_other.trim():'',barriers:data.barriers,barriers_other:data.barriers.includes('other')?data.barriers_other.trim():'',care_location:data.care_location,travel_time:data.travel_time,delayed_care:data.delayed_care,ideal_features:data.ideal_features,ideal_other:data.ideal_features.includes('other')?data.ideal_other.trim():'',telehealth_comfort:data.telehealth_comfort,priorities:data.priorities,priorities_other:data.priorities.includes('other')?data.priorities_other.trim():'',comments:data.comments.trim(),source:data.source,staff_assisted:data.staff_assisted==='yes',contact:([data.contact_name,data.contact_phone,data.contact_email].some(s=>s.trim())?{name:data.contact_name.trim(),phone:data.contact_phone.trim(),email:data.contact_email.trim(),consent:data.contact_consent}:null) ,honey:data.honey};
+    try{busy=true;el('next-btn').disabled=true;el('next-btn').textContent=tr('sending');const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),18000);let res;
+      try{res=await fetch(config.surveyEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});}finally{clearTimeout(timer);}
+      if(!res.ok)throw new Error(`Submission failed (${res.status})`);
+      el('success-title').textContent=tr('thanks');el('success-copy').textContent=tr('thanksBody');finish();
+    }catch(err){console.warn('Survey submission was not completed.',err.message);showError('submitError');}finally{busy=false;el('next-btn').disabled=false;el('next-btn').innerHTML=tr('submit')+' <span aria-hidden="true">→</span>';}
+  }
+  function finish(){el('survey-main').hidden=true;el('success-screen').hidden=false;el('restart-btn').textContent=tr('restart');window.scrollTo({top:0,behavior:'smooth'});data=blank();}
+  el('step-content').addEventListener('change',e=>{if(e.target.matches('input[type=checkbox],input[type=radio],select'))onFieldEvent(e);});
+  el('step-content').addEventListener('input',e=>{if(e.target.matches('input[type=text],input[type=email],input[type=tel],textarea'))onFieldEvent(e);});
+  el('next-btn').addEventListener('click',handleNext);
+  el('back-btn').addEventListener('click',()=>{if(step>0&&!busy){step--;show();document.querySelector('.progress-area').scrollIntoView({behavior:'smooth',block:'start'});}});
+  el('lang-en').addEventListener('click',()=>{lang='en';show();});el('lang-es').addEventListener('click',()=>{lang='es';show();});
+  el('restart-btn').addEventListener('click',()=>{data=blank();step=0;el('success-screen').hidden=true;el('survey-main').hidden=false;show();window.scrollTo(0,0);});
+  el('survey-form').addEventListener('submit',e=>{e.preventDefault();handleNext();});
+  show();
+})();
