@@ -133,3 +133,51 @@
   el('survey-form').addEventListener('submit',e=>{e.preventDefault();handleNext();});
   show();
 })();
+
+/* Remove identifying contact information from the public survey */
+(() => {
+  const root = document.getElementById('step-content');
+
+  function removeContactFields() {
+    root.querySelectorAll('.question-card').forEach(card => {
+      if (card.querySelector('.contact-fields')) card.remove();
+    });
+
+    root.querySelectorAll('.review-card').forEach(card => {
+      const heading = card.querySelector('h3')?.textContent || '';
+      if (/contact|contacto/i.test(heading)) card.remove();
+    });
+
+    const description = root.querySelector('.step-description');
+    if (description && /contact details|datos de contacto/i.test(description.textContent)) {
+      const spanish = document.getElementById('lang-es').getAttribute('aria-pressed') === 'true';
+      description.textContent = spanish
+        ? '¡Casi termina! Cuéntenos lo que faltó.'
+        : 'Almost done! Tell us what we missed.';
+    }
+
+    root.querySelectorAll('.small-info').forEach(note => {
+      if (/contact details|datos de contacto/i.test(note.textContent)) {
+        note.textContent = 'Please do not include names, phone numbers, email addresses, or identifying medical details.';
+      }
+    });
+
+    const duration = document.getElementById('duration-desc');
+    if (duration) {
+      duration.textContent = 'No name or contact information requested.';
+    }
+  }
+
+  new MutationObserver(removeContactFields).observe(root, {childList: true});
+  removeContactFields();
+
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (url, options = {}) => {
+    if (String(url).includes('/functions/v1/submit-survey') && options.body) {
+      const data = JSON.parse(options.body);
+      data.contact = null;
+      options = {...options, body: JSON.stringify(data)};
+    }
+    return originalFetch(url, options);
+  };
+})();
