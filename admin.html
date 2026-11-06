@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow">
+  <title>Staff Reports | TAN Healthcare Newton Survey</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+  .admin-shell{max-width:1100px;margin:30px auto;padding:0 22px 40px}.admin-panel{background:white;border:1px solid var(--line);border-radius:16px;padding:27px;box-shadow:var(--shadow)}.admin-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:22px 0}.stat{padding:18px;border-radius:12px;background:#eaf8ff}.stat span{font-size:13px;color:#466b81}.stat strong{display:block;font-size:29px;color:var(--navy)}.report-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:17px;margin-top:20px}.chart-card{background:white;border:1px solid var(--line);border-radius:14px;padding:20px}.chart-card h3{color:var(--navy);margin:0 0 13px;font-size:17px}.barline{margin:12px 0}.barlabel{display:flex;justify-content:space-between;gap:14px;font-size:13px}.barlabel span{flex:1}.barlabel b{color:var(--navy)}.bartrack{height:8px;background:#e4f2f9;border-radius:20px;overflow:hidden;margin-top:5px}.barfill{height:100%;background:var(--pink);border-radius:20px}.admin-topline{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}.report-actions{display:flex;gap:9px;flex-wrap:wrap;margin:15px 0}.report-actions .button{min-height:40px;padding:8px 15px;font-size:13px}.login{max-width:470px;margin:40px auto}.login h1,.admin-panel h1{color:var(--navy)}.login .field{margin:12px 0}.notice{padding:13px;background:#fff5db;border:1px solid #efd99e;border-radius:10px;font-size:13px;margin:10px 0}.contact-table{width:100%;border-collapse:collapse;margin-top:15px;font-size:13px}.contact-table th,.contact-table td{padding:11px;text-align:left;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.table-wrapper{overflow-x:auto}#admin-status{color:var(--muted);font-size:13px}#admin-error{color:#b42352;font-weight:700}.filter-wrap{display:flex;align-items:center;gap:10px}.filter-wrap select{min-width:140px}.footnote{font-size:12px;color:#607888;margin-top:12px}@media(max-width:800px){.admin-grid,.report-grid{grid-template-columns:1fr}}@media(max-width:500px){.admin-shell{padding:0 12px}.admin-panel{padding:18px}.admin-grid{grid-template-columns:1fr 1fr}}
+  </style>
+  <script src="config.js"></script>
+  <script type="module" src="admin.js"></script>
+</head>
+<body>
+  <header class="site-header"><div class="header-inner"><a class="brand" href="./"><img src="assets/tan-logo.jpg" alt="TAN Healthcare"></a><div class="header-divider"></div><div class="brand-title"><span>Newton County Survey</span><strong>Staff Reporting Dashboard</strong></div></div></header>
+  <main class="admin-shell">
+    <div id="login-panel" class="admin-panel login"><h1>Staff sign-in</h1><p>For authorized TAN Healthcare team members only. Survey answers and contact requests are private.</p><div id="admin-setup" class="notice" hidden>Staff login is not configured yet. Follow README.md to connect a secure Supabase project.</div><form id="login-form"><div class="field"><label for="staff-email">Work email</label><input type="email" id="staff-email" autocomplete="username" required></div><div class="field"><label for="staff-password">Password</label><input type="password" id="staff-password" autocomplete="current-password" required></div><button id="login-btn" class="button primary" type="submit">Sign in</button></form><p id="admin-error" role="alert"></p></div>
+    <div id="dashboard" hidden>
+      <div class="admin-topline"><div><h1 style="color:var(--navy);margin:0">Community needs at a glance</h1><p style="margin:4px 0;color:var(--muted)">Results reflect submitted survey responses, not population-wide prevalence.</p></div><button id="logout-btn" class="button secondary">Sign out</button></div>
+      <div class="admin-panel"><div class="admin-topline"><div class="filter-wrap"><label for="zip-filter"><strong>ZIP code</strong></label><select id="zip-filter"><option value="">All ZIP codes</option></select></div><div id="admin-status" role="status"></div></div>
+      <div class="admin-grid"><div class="stat"><span>Responses in view</span><strong id="stat-total">0</strong></div><div class="stat"><span>Reporting delayed care</span><strong id="stat-delayed">0</strong></div><div class="stat"><span>Staff-assisted responses</span><strong id="stat-assisted">0</strong></div></div>
+      <div class="report-actions"><button id="download-responses" class="button primary">Export survey responses (CSV)</button><button id="download-summary" class="button secondary">Export summary (CSV)</button><button id="download-contacts" class="button secondary">Export contacts (CSV)</button><button id="reload-btn" class="button secondary">Refresh results</button></div>
+      <p class="footnote">Multi-select counts show how many respondents selected each item. Categories can exceed 100% when totaled. Contact details are kept in a separate table, not joined to answers. Only share exports with authorized staff.</p></div>
+      <div id="charts" class="report-grid"></div>
+      <div class="admin-panel" style="margin-top:18px"><h2 style="color:var(--navy)">Follow-up requests</h2><p class="footnote">Only people who voluntarily gave contact details and permission appear below.</p><div class="table-wrapper"><table class="contact-table"><thead><tr><th>Received</th><th>Name</th><th>Phone</th><th>Email</th></tr></thead><tbody id="contact-body"></tbody></table></div></div>
+    </div>
+  </main>
+</body>
+</html>

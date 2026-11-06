@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#073252">
+  <meta name="description" content="Help shape future outpatient healthcare in Newton County. Share your community's healthcare priorities with TAN Healthcare.">
+  <title>Newton County Community Healthcare Needs Assessment | TAN Healthcare</title>
+  <link rel="icon" href="assets/tan-logo.jpg" type="image/jpeg">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="config.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#survey-main">Skip to survey</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="./" class="brand" aria-label="TAN Healthcare survey home"><img src="assets/tan-logo.jpg" alt="TAN Healthcare" /></a>
+      <div class="header-divider" aria-hidden="true"></div>
+      <div class="brand-title"><span>Newton County Community</span><strong>Healthcare Needs Assessment</strong></div>
+      <div class="language-switch" role="group" aria-label="Choose survey language">
+        <button id="lang-en" type="button" class="lang active" aria-pressed="true">English</button>
+        <button id="lang-es" type="button" class="lang" aria-pressed="false">Español</button>
+      </div>
+    </div>
+  </header>
+  <main id="survey-main" class="shell">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-icon" aria-hidden="true"><svg viewBox="0 0 80 80" fill="none"><path d="M40 64S12 47 12 29c0-9 12-16 22-4l6 6 6-6c10-12 22-5 22 4 0 18-28 35-28 35Z" fill="#f20555" opacity=".13"/><path d="M40 52S20 40 20 29a10 10 0 0 1 20-3 10 10 0 0 1 20 3C60 40 40 52 40 52Z" fill="#f20555"/><path d="M8 51c10-8 17 0 22 9M72 51c-10-8-17 0-22 9" stroke="#05b7ea" stroke-width="3.5" stroke-linecap="round"/><path d="M22 55v11m36-11v11" stroke="#05b7ea" stroke-width="3" stroke-linecap="round"/></svg></div>
+      <div class="hero-copy"><h1 id="hero-title">Help shape future healthcare in Newton County.</h1><p id="hero-desc">Tell us what healthcare you and your community need most. Your input will help guide conversations about potential outpatient services.</p></div>
+      <div class="time-estimate"><span class="clock" aria-hidden="true">◷</span><div><strong id="duration-label">About 5–7 minutes</strong><span id="duration-desc">Anonymous unless you choose to share contact information.</span></div></div>
+    </section>
+    <div id="mode-banner" class="mode-banner" role="status" hidden></div>
+    <section class="survey-layout" aria-label="Healthcare needs survey">
+      <aside class="survey-sidebar" aria-label="Survey progress">
+        <div class="sidebar-card"><div class="sidebar-eyebrow" id="step-title-small">YOUR VOICE MATTERS</div><h2 id="sidebar-title">Your community. Your clinic.</h2><p id="sidebar-copy">Choose as many answers as you need. There are no right or wrong answers.</p><div class="sidebar-decoration" aria-hidden="true">✳</div></div>
+        <div class="sidebar-note"><span aria-hidden="true">♡</span><p id="sidebar-note">This is a planning survey, not a request for medical care. No services are guaranteed or currently offered through this survey.</p></div>
+      </aside>
+      <div class="form-container">
+        <div class="progress-area"><div class="progress-heading"><strong id="step-indicator">Step 1 of 7</strong><span id="progress-percent">14%</span></div><div class="progress-track" role="progressbar" aria-label="Survey progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="14"><div id="progress-fill"></div></div></div>
+        <form id="survey-form" novalidate>
+          <section id="step-content" aria-live="polite" aria-atomic="true"></section>
+          <div id="validation-alert" class="validation-alert" role="alert" hidden></div>
+          <div class="form-actions"><button class="button secondary" type="button" id="back-btn">Back</button><button class="button primary" type="button" id="next-btn">Continue <span aria-hidden="true">→</span></button></div>
+        </form>
+        <footer class="site-footer"><p id="footer-help">Questions about this survey? Contact TAN Healthcare at <a href="https://www.tanhealthcare.org/" target="_blank" rel="noopener noreferrer">tanhealthcare.org</a>.</p><p id="footer-privacy">Please do not enter medical records, Social Security numbers, or other sensitive personal information.</p></footer>
+      </div>
+    </section>
+  </main>
+  <div id="success-screen" class="success-screen" hidden><div class="success-panel"><div class="success-symbol" aria-hidden="true">✓</div><h1 id="success-title">Thank you for sharing your voice!</h1><p id="success-copy">Your responses can help guide conversations about Newton County's future healthcare needs.</p><button id="restart-btn" class="button primary" type="button">Start another response</button></div></div>
+</body>
+</html>
